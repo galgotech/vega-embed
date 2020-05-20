@@ -53,7 +53,7 @@ const I18N = {
 export interface EmbedOptions<S = string> {
   actions?: boolean | Actions;
   mode?: Mode;
-  theme?: 'excel' | 'ggplot2' | 'quartz' | 'vox' | 'dark';
+  theme?: 'excel' | 'ggplot2' | 'quartz' | 'vox' | 'dark' | 'grafana';
   defaultStyle?: boolean | string;
   logLevel?: number;
   loader?: Loader | LoaderOptions;
