@@ -57,7 +57,7 @@
     "json-stringify-pretty-compact": "^2.0.0",
     "semver": "^7.3.2",
     "vega-schema-url-parser": "^1.1.0",
-    "vega-themes": "^2.8.3",
+    "vega-themes": "https://github.com/galgotech/vega-themes/tarball/master",
     "vega-tooltip": "^0.23.0"
   },
   "scripts": {
