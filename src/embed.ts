@@ -1,18 +1,30 @@
-import { applyPatch, Operation } from 'fast-json-patch';
+import {applyPatch, Operation} from 'fast-json-patch';
 import stringify from 'json-stringify-pretty-compact';
-import { satisfies } from 'semver';
+import {satisfies} from 'semver';
 import * as vegaImport from 'vega';
-import { EncodeEntryName, Loader, LoaderOptions, Renderers, Spec as VgSpec, TooltipHandler, View } from 'vega';
+import {
+  AutoSize,
+  Config as VgConfig,
+  EncodeEntryName,
+  isBoolean,
+  isString,
+  Loader,
+  LoaderOptions,
+  mergeConfig,
+  Renderers,
+  Spec as VgSpec,
+  TooltipHandler,
+  View,
+} from 'vega';
 import * as vegaLiteImport from 'vega-lite';
-import { Config as VlConfig, TopLevelSpec as VlSpec } from 'vega-lite';
+import {Config as VlConfig, TopLevelSpec as VlSpec} from 'vega-lite';
 import schemaParser from 'vega-schema-url-parser';
 import * as themes from 'vega-themes';
-import { Handler, Options as TooltipOptions } from 'vega-tooltip';
-import { isBoolean, isString, mergeConfig } from 'vega-util';
+import {Handler, Options as TooltipOptions} from 'vega-tooltip';
 import post from './post';
 import embedStyle from './style';
-import { Config, Mode } from './types';
-import { mergeDeep } from './util';
+import {Config, Mode} from './types';
+import {mergeDeep} from './util';
 
 export * from './types';
 
@@ -26,13 +38,13 @@ if (vegaLite === undefined && w?.['vl']?.compile) {
 }
 
 export interface Actions {
-  export?: boolean | { svg?: boolean; png?: boolean };
+  export?: boolean | {svg?: boolean; png?: boolean};
   source?: boolean;
   compiled?: boolean;
   editor?: boolean;
 }
 
-export const DEFAULT_ACTIONS = { export: { svg: true, png: true }, source: true, compiled: true, editor: true };
+export const DEFAULT_ACTIONS = {export: {svg: true, png: true}, source: true, compiled: true, editor: true};
 
 export interface Hover {
   hoverSet?: EncodeEntryName;
@@ -47,22 +59,23 @@ const I18N = {
   EDITOR_ACTION: 'Open in Vega Editor',
   PNG_ACTION: 'Save as PNG',
   SOURCE_ACTION: 'View Source',
-  SVG_ACTION: 'Save as SVG'
+  SVG_ACTION: 'Save as SVG',
 };
 
-export interface EmbedOptions<S = string> {
+export interface EmbedOptions<S = string, R = Renderers> {
+  bind?: HTMLElement | string;
   actions?: boolean | Actions;
   mode?: Mode;
   theme?: 'excel' | 'ggplot2' | 'quartz' | 'vox' | 'dark' | 'grafana';
   defaultStyle?: boolean | string;
   logLevel?: number;
   loader?: Loader | LoaderOptions;
-  renderer?: Renderers;
+  renderer?: R;
   tooltip?: TooltipHandler | TooltipOptions | boolean;
   patch?: S | PatchFunc | Operation[];
   width?: number;
   height?: number;
-  padding?: number | { left?: number; right?: number; top?: number; bottom?: number };
+  padding?: number | {left?: number; right?: number; top?: number; bottom?: number};
   scaleFactor?: number;
   config?: S | Config;
   sourceHeader?: string;
@@ -71,23 +84,25 @@ export interface EmbedOptions<S = string> {
   hover?: boolean | Hover;
   i18n?: Partial<typeof I18N>;
   downloadFileName?: string;
-  formatLocale?: object;
-  timeFormatLocale?: object;
+  formatLocale?: Record<string, unknown>;
+  timeFormatLocale?: Record<string, unknown>;
+  ast?: boolean;
+  viewClass?: typeof View;
 }
 
-const NAMES: { [key in Mode]: string } = {
+const NAMES: {[key in Mode]: string} = {
   vega: 'Vega',
-  'vega-lite': 'Vega-Lite'
+  'vega-lite': 'Vega-Lite',
 };
 
 const VERSION = {
   vega: vega.version,
-  'vega-lite': vegaLite ? vegaLite.version : 'not available'
+  'vega-lite': vegaLite ? vegaLite.version : 'not available',
 };
 
-const PREPROCESSOR: { [mode in Mode]: (spec: any, config?: Config) => VgSpec } = {
+const PREPROCESSOR: {[mode in Mode]: (spec: any, config?: Config) => VgSpec} = {
   vega: (vgSpec: VgSpec) => vgSpec,
-  'vega-lite': (vlSpec, config) => vegaLite.compile(vlSpec as VlSpec, { config: config as VlConfig }).spec
+  'vega-lite': (vlSpec, config) => vegaLite.compile(vlSpec as VlSpec, {config: config as VlConfig}).spec,
 };
 
 const SVG_CIRCLES = `
@@ -97,15 +112,20 @@ const SVG_CIRCLES = `
   <circle r="2" cy="8" cx="14"></circle>
 </svg>`;
 
+const CHART_WRAPPER_CLASS = 'chart-wrapper';
+
 export type VisualizationSpec = VlSpec | VgSpec;
 
 export interface Result {
   /** The Vega view. */
   view: View;
-  /** The inut specification. */
+
+  /** The input specification. */
   spec: VisualizationSpec;
+
   /** The compiled and patched Vega specification. */
   vgSpec: VgSpec;
+
   /** Removes references to unwanted behaviors and memory leaks. Calls Vega's `view.finalize`.  */
   finalize: () => void;
 }
@@ -117,6 +137,7 @@ function isTooltipHandler(h?: boolean | TooltipOptions | TooltipHandler): h is T
 function viewSource(source: string, sourceHeader: string, sourceFooter: string, mode: Mode) {
   const header = `<html><head>${sourceHeader}</head><body><pre><code class="json">`;
   const footer = `</code></pre>${sourceFooter}</body></html>`;
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const win = window.open('')!;
   win.document.write(header + source + footer);
   win.document.title = `${NAMES[mode]} JSON Source`;
@@ -174,6 +195,14 @@ function isLoader(o?: LoaderOptions | Loader): o is Loader {
   return !!(o && 'load' in o);
 }
 
+function createLoader(opts?: Loader | LoaderOptions) {
+  return isLoader(opts) ? opts : vega.loader(opts);
+}
+
+function embedOptionsFromUsermeta(parsedSpec: VisualizationSpec) {
+  return (parsedSpec.usermeta && (parsedSpec.usermeta as any)['embedOptions']) ?? {};
+}
+
 /**
  * Embed a Vega visualization component in a web page. This function returns a promise.
  *
@@ -187,20 +216,29 @@ export default async function embed(
   spec: VisualizationSpec | string,
   opts: EmbedOptions = {}
 ): Promise<Result> {
-  const loader: Loader = isLoader(opts.loader) ? opts.loader : vega.loader(opts.loader);
+  let parsedSpec: VisualizationSpec;
+  let loader: Loader | undefined;
 
-  // load spec, config, and patch that are references by URLs
-  const parsedSpec = isString(spec) ? JSON.parse(await loader.load(spec)) : spec;
+  if (isString(spec)) {
+    loader = createLoader(opts.loader);
+    parsedSpec = JSON.parse(await loader.load(spec));
+  } else {
+    parsedSpec = spec;
+  }
 
-  const usermetaOpts = await loadOpts(
-    (parsedSpec.usermeta && (parsedSpec.usermeta as any)['embedOptions']) ?? {},
-    loader
-  );
+  const usermetaLoader = embedOptionsFromUsermeta(parsedSpec).loader;
+
+  // either create the loader for the first time or create a new loader if the spec has new loader options
+  if (!loader || usermetaLoader) {
+    loader = createLoader(opts.loader ?? usermetaLoader);
+  }
+
+  const usermetaOpts = await loadOpts(embedOptionsFromUsermeta(parsedSpec), loader);
   const parsedOpts = await loadOpts(opts, loader);
 
   const mergedOpts = {
     ...mergeDeep(parsedOpts, usermetaOpts),
-    config: mergeConfig(parsedOpts.config ?? {}, usermetaOpts.config ?? {})
+    config: mergeConfig(parsedOpts.config ?? {}, usermetaOpts.config ?? {}),
   };
 
   return await _embed(el, parsedSpec, mergedOpts, loader);
@@ -211,9 +249,18 @@ async function loadOpts(opt: EmbedOptions, loader: Loader): Promise<EmbedOptions
   const patch: PatchFunc | Operation[] = isString(opt.patch) ? JSON.parse(await loader.load(opt.patch)) : opt.patch;
   return {
     ...(opt as any),
-    ...(patch ? { patch } : {}),
-    ...(config ? { config } : {})
+    ...(patch ? {patch} : {}),
+    ...(config ? {config} : {}),
   };
+}
+
+function getRoot(el: Element) {
+  const possibleRoot = el.getRootNode ? el.getRootNode() : document;
+  if (possibleRoot instanceof ShadowRoot) {
+    return {root: possibleRoot, rootContainer: possibleRoot};
+  } else {
+    return {root: document, rootContainer: document.head ?? document.body};
+  }
 }
 
 async function _embed(
@@ -225,24 +272,29 @@ async function _embed(
   const config = opts.theme ? mergeConfig(themes[opts.theme], opts.config ?? {}) : opts.config;
 
   const actions = isBoolean(opts.actions) ? opts.actions : mergeDeep<Actions>({}, DEFAULT_ACTIONS, opts.actions ?? {});
-  const i18n = { ...I18N, ...opts.i18n };
+  const i18n = {...I18N, ...opts.i18n};
 
   const renderer = opts.renderer ?? 'canvas';
   const logLevel = opts.logLevel ?? vega.Warn;
   const downloadFileName = opts.downloadFileName ?? 'visualization';
 
+  const element = typeof el === 'string' ? document.querySelector(el) : el;
+  if (!element) {
+    throw new Error(`${el} does not exist`);
+  }
+
   if (opts.defaultStyle !== false) {
     // Add a default stylesheet to the head of the document.
     const ID = 'vega-embed-style';
-    if (!document.getElementById(ID)) {
+    const {root, rootContainer} = getRoot(element);
+    if (!root.getElementById(ID)) {
       const style = document.createElement('style');
       style.id = ID;
       style.innerText =
         opts.defaultStyle === undefined || opts.defaultStyle === true
           ? (embedStyle ?? '').toString()
           : opts.defaultStyle;
-
-      document.head.appendChild(style);
+      rootContainer.appendChild(style);
     }
   }
 
@@ -260,16 +312,19 @@ async function _embed(
     }
   }
 
-  const div = typeof el === 'string' ? document.querySelector(el) : el;
-  if (!div) {
-    throw Error(`${el} does not exist`);
-  }
-
-  div.classList.add('vega-embed');
+  element.classList.add('vega-embed');
   if (actions) {
-    div.classList.add('has-actions');
+    element.classList.add('has-actions');
   }
-  div.innerHTML = ''; // clear container
+  element.innerHTML = ''; // clear container
+
+  let container = element;
+  if (actions) {
+    const chartWrapper = document.createElement('div');
+    chartWrapper.classList.add(CHART_WRAPPER_CLASS);
+    element.appendChild(chartWrapper);
+    container = chartWrapper;
+  }
 
   const patch = opts.patch;
   if (patch) {
@@ -289,14 +344,32 @@ async function _embed(
     vega.timeFormatLocale(opts.timeFormatLocale);
   }
 
+  const {ast} = opts;
+
   // Do not apply the config to Vega when we have already applied it to Vega-Lite.
   // This call may throw an Error if parsing fails.
-  const runtime = vega.parse(vgSpec, mode === 'vega-lite' ? {} : config);
+  const runtime = vega.parse(vgSpec, mode === 'vega-lite' ? {} : (config as VgConfig), {ast});
 
-  const view = new vega.View(runtime, {
+  const view = new (opts.viewClass || vega.View)(runtime, {
     loader,
     logLevel,
-    renderer
+    renderer,
+    ...(ast ? {expr: (vega as any).expressionInterpreter} : {}),
+  });
+
+  view.addSignalListener('autosize', (_, autosize: Exclude<AutoSize, string>) => {
+    const {type} = autosize;
+    if (type == 'fit-x') {
+      container.classList.add('fit-x');
+      container.classList.remove('fit-y');
+    } else if (type == 'fit-y') {
+      container.classList.remove('fit-x');
+      container.classList.add('fit-y');
+    } else if (type == 'fit') {
+      container.classList.add('fit-x', 'fit-y');
+    } else {
+      container.classList.remove('fit-x', 'fit-y');
+    }
   });
 
   if (opts.tooltip !== false) {
@@ -311,14 +384,14 @@ async function _embed(
     view.tooltip(handler);
   }
 
-  let { hover } = opts;
+  let {hover} = opts;
 
   if (hover === undefined) {
     hover = mode === 'vega';
   }
 
   if (hover) {
-    const { hoverSet, updateSet } = (typeof hover === 'boolean' ? {} : hover) as Hover;
+    const {hoverSet, updateSet} = (typeof hover === 'boolean' ? {} : hover) as Hover;
 
     view.hover(hoverSet, updateSet);
   }
@@ -335,17 +408,17 @@ async function _embed(
     }
   }
 
-  await view.initialize(el).runAsync();
+  await view.initialize(container, opts.bind).runAsync();
 
   let documentClickHandler: ((this: Document, ev: MouseEvent) => void) | undefined;
 
   if (actions !== false) {
-    let wrapper = div;
+    let wrapper = element;
 
     if (opts.defaultStyle !== false) {
       const details = document.createElement('details');
       details.title = i18n.CLICK_TO_VIEW_ACTIONS;
-      div.append(details);
+      element.append(details);
 
       wrapper = details;
       const summary = document.createElement('summary');
@@ -368,8 +441,8 @@ async function _embed(
     // add 'Export' action
     if (actions === true || actions.export !== false) {
       for (const ext of ['svg', 'png'] as const) {
-        if (actions === true || actions.export === true || (actions.export as { svg?: boolean; png?: boolean })[ext]) {
-          const i18nExportAction = (i18n as { [key: string]: string })[`${ext.toUpperCase()}_ACTION`];
+        if (actions === true || actions.export === true || (actions.export as {svg?: boolean; png?: boolean})[ext]) {
+          const i18nExportAction = (i18n as {[key: string]: string})[`${ext.toUpperCase()}_ACTION`];
           const exportLink = document.createElement('a');
 
           exportLink.text = i18nExportAction;
@@ -428,7 +501,7 @@ async function _embed(
           config: config as Config,
           mode,
           renderer,
-          spec: stringify(spec)
+          spec: stringify(spec),
         });
         e.preventDefault();
       });
@@ -444,5 +517,5 @@ async function _embed(
     view.finalize();
   }
 
-  return { view, spec, vgSpec, finalize };
+  return {view, spec, vgSpec, finalize};
 }
