@@ -68,7 +68,7 @@
     "tslib": "^2.2.0",
     "vega-schema-url-parser": "^2.2.0",
     "vega-themes": "https://github.com/galgotech/vega-themes/tarball/master",
-    "vega-tooltip": "^0.25.1"
+    "vega-tooltip": "^0.26.0"
   },
   "scripts": {
     "prebuild": "yarn clean && yarn build:style",
